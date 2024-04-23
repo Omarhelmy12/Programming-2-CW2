@@ -1,5 +1,4 @@
 #include <iostream>
-#include <vector>
 #include <thread>
 #include <mutex>
 #include <sys/types.h>
@@ -12,6 +11,7 @@
 
 #define MAX_LEN 200
 #define NUM_COLORS 6
+#define MAX_CLIENTS 100 // Maximum number of clients
 
 using namespace std;
 
@@ -23,8 +23,8 @@ struct Terminal {
     std::unique_ptr<std::thread> th; // Using unique_ptr to manage threads
 };
 
-// Vector to store connected clients
-vector<Terminal> clients;
+// Array to store connected clients
+Terminal clients[MAX_CLIENTS];
 
 // ANSI color codes for output
 string def_col = "\033[0m";
@@ -33,17 +33,16 @@ string colors[] = {"\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[35m", "
 // Global variables
 int seed = 0; // Seed for client IDs
 mutex cout_mtx, clients_mtx; // Mutexes for thread synchronization
+int num_clients = 0; // Number of connected clients
 
 // Function prototypes
 string color(int code); // Function to get ANSI color code based on input code
 void set_name(int id, char name[]); // Function to set client's name
 void shared_print(string str, bool endLine = true); // Function for thread-safe printing
 void broadcast_message(string message, int sender_id); // Function to broadcast message to all clients except sender
-void broadcast_message(int num, int sender_id); // Overloaded function to broadcast integer message
 void end_connection(int id); // Function to end connection with a client
 void handle_client(int client_socket, int id); // Function to handle individual client communication
 string encryptCaesarCipher(const string& text, int shift); // Function to encrypt text using Caesar Cipher
-string decryptCaesarCipher(const string& text, int shift); // Function to decrypt text using Caesar Cipher
 
 // Main function
 int main() {
@@ -90,13 +89,19 @@ int main() {
         seed++;
         // Create thread to handle client
         thread t(handle_client, client_socket, seed);
-        // Lock clients vector and add new client
+        // Lock clients array and add new client
         lock_guard<mutex> guard(clients_mtx);
-        clients.push_back({seed, "Anonymous", client_socket, std::make_unique<std::thread>(std::move(t))});
+        if (num_clients < MAX_CLIENTS) {
+            clients[num_clients++] = {seed, "Anonymous", client_socket, std::make_unique<std::thread>(std::move(t))};
+        }
+        else {
+            cerr << "Maximum number of clients reached. Can't accept more connections." << endl;
+            close(client_socket); // Close the socket for this client
+        }
     }
 
     // Join threads and close server socket
-    for (int i = 0; i < clients.size(); i++) {
+    for (int i = 0; i < num_clients; i++) {
         if (clients[i].th->joinable())
             clients[i].th->join();
     }
@@ -111,7 +116,7 @@ string color(int code) {
 
 // Function to set client's name
 void set_name(int id, char name[]) {
-    for (int i = 0; i < clients.size(); i++) {
+    for (int i = 0; i < num_clients; i++) {
         if (clients[i].id == id) {
             clients[i].name = string(name);
         }
@@ -130,33 +135,24 @@ void shared_print(string str, bool endLine) {
 void broadcast_message(string message, int sender_id) {
     char temp[MAX_LEN];
     strcpy(temp, message.c_str());
-    for (int i = 0; i < clients.size(); i++) {
+    for (int i = 0; i < num_clients; i++) {
         if (clients[i].id != sender_id) {
             send(clients[i].socket, temp, strlen(temp), 0);
         }
     }
 }
 
-// Overloaded function to broadcast integer message
-void broadcast_message(int num, int sender_id) {
-    for (int i = 0; i < clients.size(); i++) {
-        if (clients[i].id != sender_id) {
-            send(clients[i].socket, &num, sizeof(num), 0);
-        }
-    }
-}
-
 // Function to end connection with a client
 void end_connection(int id) {
-    for (int i = 0; i < clients.size(); i++) {
+    for (int i = 0; i < num_clients; i++) {
         if (clients[i].id == id) {
             lock_guard<mutex> guard(clients_mtx);
             clients[i].th->detach(); // Detach the thread
             close(clients[i].socket);
-            for (int j = i; j < clients.size() - 1; j++) {
+            for (int j = i; j < num_clients - 1; j++) {
                 clients[j] = std::move(clients[j + 1]); // Move the elements after deletion
             }
-            clients.pop_back(); // Remove the last element
+            num_clients--; // Decrement the count of clients
             break;
         }
     }
@@ -171,7 +167,7 @@ void handle_client(int client_socket, int id) {
     // Display welcome message
     string welcome_message = string(name) + " has joined";
     broadcast_message("#NULL", id);
-    broadcast_message(id, id);
+    broadcast_message(to_string(id), id); // Convert id to string
     broadcast_message(welcome_message, id);
     shared_print(color(id) + welcome_message + def_col);
 
@@ -187,7 +183,7 @@ void handle_client(int client_socket, int id) {
             // Display leaving message
             string message = string(name) + " has left";
             broadcast_message("#NULL", id);
-            broadcast_message(id, id);
+            broadcast_message(to_string(id), id); // Convert id to string
             broadcast_message(message, id);
             shared_print(color(id) + message + def_col);
             end_connection(id);
@@ -215,21 +211,6 @@ string encryptCaesarCipher(const string& text, int shift) {
                 result[i] = 'A' + (text[i] - 'A' + shift) % 26; // Apply Caesar Cipher encryption for uppercase letters
             } else {
                 result[i] = 'a' + (text[i] - 'a' + shift) % 26; // Apply Caesar Cipher encryption for lowercase letters
-            }
-        }
-    }
-    return result;
-}
-
-// Function to decrypt text using Caesar Cipher
-string decryptCaesarCipher(const string& text, int shift) {
-    string result = text;
-    for (size_t i = 0; i < text.length(); ++i) {
-        if (isalpha(text[i])) {
-            if (isupper(text[i])) {
-                result[i] = 'A' + (text[i] - 'A' + 26 - shift) % 26; // Apply Caesar Cipher decryption for uppercase letters
-            } else {
-                result[i] = 'a' + (text[i] - 'a' + 26 - shift) % 26; // Apply Caesar Cipher decryption for lowercase letters
             }
         }
     }
